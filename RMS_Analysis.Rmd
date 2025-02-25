@@ -1,0 +1,315 @@
+---
+title: "Replicating IDEA-RS in ABCD"
+author: "Eileen Xu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Replicating the model developed in Pelotas, Brazil by [Rocha et al (2021)](https://doi.org/10.1016/j.jaac.2019.12.004).
+
+Using a sample of unrelated participants.
+
+```{r include=FALSE, echo = FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(rms)
+library(paletteer)
+library(pROC)
+library(kableExtra)
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, results = "asis", fig.width = 10)
+
+dat = readRDS("ABCD_ERS_youth.rds")
+```
+
+
+```{r, echo = F, warning = F}
+dat = dat %>% mutate(
+  sex = factor(sex, levels = c("M", "F")),
+  white = factor(white, levels = c("white", "nonwhite")),
+  trauma3 = factor(trauma3, levels = c("none", "one", "multiple")),
+  sch1 = factor(sch1, levels = c(0, 1)),
+  loneliness01 = factor(loneliness01, levels = c(0, 1)),
+  fights01 = factor(fights01, levels = c(0, 1)),
+  run01 = factor(run01, levels = c(0,1)),
+  everdrugs = factor(everdrugs, levels = c(0,1)),
+  care1q = factor(care1q, levels = c("best", "very good", "good", "poor", "poorest")),
+  care2q = factor(care2q, levels = c("best", "very good", "good", "poor", "poorest")),
+  conflictq = factor(conflictq, levels = c("least conflict", "little conflict", "moderate conflict", "much conflict", "most conflict"))
+)
+
+
+#Individuals with no baseline MDD
+incdat = dat[which(dat$MDDLifetime_b==0),]
+incdat = incdat %>% select("src_subject_id", "sex", "white", "trauma3", "sch1", "loneliness01", "fights01", "run01", "everdrugs", "care1q", "care2q", "conflictq", "incidentMDD", "incSeverity")
+
+completecols = names(incdat)
+
+inc.complete = incdat[complete.cases(incdat),]
+
+#saveRDS(inc.complete, "Modeldata_youth.rds")
+
+inc.complete = inc.complete[,-1]
+```
+
+
+```{r}
+inc.complete %>% group_by(incidentMDD) %>% summarise(
+  N = n(),
+  sexF = paste0(sum(sex=="F"), " (", round( sum(sex=="F")/N*100, 2), "%)"),
+  nonWhite = paste0(sum(white=="nonwhite"), " (", round( sum(white=="nonwhite")/N*100, 2), "%)"),
+  trauma1 = paste0(sum(trauma3=="one"), " (", round( sum(trauma3=="one")/N*100, 2), "%)"),
+  traumaMult = paste0(sum(trauma3=="multiple"), " (", round( sum(trauma3=="multiple")/N*100, 2), "%)"),
+  school = paste0(sum(sch1=="1"), " (", round( sum(sch1=="1")/N*100, 2), "%)"),
+  lonely = paste0(sum(loneliness01=="1"), " (", round( sum(loneliness01=="1")/N*100, 2), "%)"),
+  fights = paste0(sum(fights01=="1"), " (", round( sum(fights01=="1")/N*100, 2), "%)"),
+  run = paste0(sum(run01=="1"), " (", round( sum(run01=="1")/N*100, 2), "%)"),
+  drugs = paste0(sum(everdrugs=="1"), " (", round( sum(everdrugs=="1")/N*100, 2), "%)"),
+  care1qBest = paste0(sum(care1q=="best"), " (", round( sum(care1q=="best")/N*100, 2), "%)"),
+  care1qVG = paste0(sum(care1q=="very good"), " (", round( sum(care1q=="very good")/N*100, 2), "%)"),
+  care1qGood = paste0(sum(care1q=="good"), " (", round( sum(care1q=="good")/N*100, 2), "%)"),
+  care1qPoor = paste0(sum(care1q=="poor"), " (", round( sum(care1q=="poor")/N*100, 2), "%)"),
+  care1qPoorest = paste0(sum(care1q=="poorest"), " (", round( sum(care1q=="poorest")/N*100, 2), "%)"),
+  care2qBest = paste0(sum(care2q=="best"), " (", round( sum(care2q=="best")/N*100, 2), "%)"),
+  care2qVG =  paste0(sum(care2q=="very good"), " (", round( sum(care2q=="very good")/N*100, 2), "%)"),
+  care2qGood = paste0(sum(care2q=="good"), " (", round( sum(care2q=="good")/N*100, 2), "%)"),
+  care2qPoor =  paste0(sum(care2q=="poor"), " (", round( sum(care2q=="poor")/N*100, 2), "%)"),
+  care2qPoorest =  paste0(sum(care2q=="poorest"), " (", round( sum(care2q=="poorest")/N*100, 2), "%)"),
+  conflictLeast =  paste0(sum(conflictq=="least conflict"), " (", round( sum(conflictq=="least conflict")/N*100, 2), "%)"),
+  conflictLittle = paste0(sum(conflictq=="little conflict"), " (", round( sum(conflictq=="little conflict")/N*100, 2), "%)"),
+  conflictModerate = paste0(sum(conflictq=="moderate conflict"), " (", round( sum(conflictq=="moderate conflict")/N*100, 2), "%)"),
+  conflictMuch = paste0(sum(conflictq=="much conflict"), " (", round( sum(conflictq=="much conflict")/N*100, 2), "%)"),
+  conflictMost = paste0(sum(conflictq=="most conflict"), " (", round( sum(conflictq=="most conflict")/N*100, 2), "%)"),
+  increaseDS = paste0(sum(incSeverity=="1"), " (", round( sum(incSeverity=="1")/N*100, 2), "%)"),
+) %>% t() %>% kbl %>% kable_styling()
+```
+
+
+## Applying IDEA-RS linear predictors to ABCD
+
+Generate IDEA-RS predictions using model.matrix to get the linear predictor on the logit scale, then use plogis() to transform linear predictions to probability scale and plot against incident MDD.
+
+```{r, echo = F, warning = F}
+# data matrix for prediction
+abcd = model.matrix(~ sex + white + trauma3 + sch1 + loneliness01 + fights01 + 
+                      run01 + everdrugs + care1q + care2q + conflictq + 
+                      sex*white +
+                      sex*sch1 + sex*everdrugs + sex*loneliness01 + sex*fights01 +
+                      sex*run01 + sex*trauma3 + sex*care1q + sex*care2q + sex*conflictq,
+                    data = inc.complete)
+
+# coefficients from pelotas complete-case analysis
+pcoef = c(-4.642, 0.325, -0.03, 0.652, 0.422, 0.29, 0.127, 0.58, -0.017, 0.121, 
+          0.006, -0.026, 0.161, 0.054, 
+          0.237, 0.181, 0.297, -0.01,
+          -0.004, 0.251, 0.163, 0.037,
+          0.17, 0.114, 0.108, 0.269, -0.395, -0.101, 
+          0.382, 0.369, 
+          -1.293, -0.203, 0.060, -0.219,
+          0.537, -0.103, -0.279, 0.143, 
+          0.011, -0.035, 0.158, 0.075)
+
+# prediction on logit scale
+l_hat = abcd %*% pcoef
+
+# transform to probability scale
+y_hat = plogis(l_hat)
+
+## add back to original data
+inc.complete = cbind(inc.complete, y_hat)
+```
+
+### Plot predictions against incident MDD
+
+#### ROC incident MDD
+
+```{r, echo = F, warning = F}
+#ROC curves
+roc(data = inc.complete, response = incidentMDD, predictor = y_hat,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration incident MDD
+
+```{r, echo = F, warning = F}
+prob = inc.complete$y_hat
+resp = as.numeric(inc.complete$incidentMDD) - 1
+
+cal = val.prob(p = prob, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+### Plot predictions against increase in depression symptoms
+
+#### ROC increase DS
+
+```{r, echo = F, warning = F}
+roc(data = inc.complete, response = incSeverity, predictor = y_hat,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration increase DS
+
+```{r, echo = F, warning = F}
+prob = inc.complete$y_hat
+resp = as.numeric(inc.complete$incSeverity)-1
+
+cal = val.prob(p = prob, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+## Adjust intercept
+
+"Current methodological guidelines recommend the identification of calibration-in-the-large problems should have priority when evaluating external validation, since miscalibration can cause systematically wrong decision making. Model updating (or adjustment) intends to make the average predicted probability equal to the observed overall event rate by fitting a new logistic regression model in the validation sample using the new intercept as the only free parameter, with the original linear predictor (obtained from the development sample) as an offset variable. " - from Rocha et al supplementary
+
+Since rms doesn't take intercept-only models, I have to use glm. Following what is described above, I will take the intercept out of the linear predictors and include the linear predictor with all coefficients (minus intercept) as an offset.
+
+```{r}
+l_hat.int = l_hat - (-4.642)
+
+inc.adj = cbind(inc.complete, l_hat.int)
+
+mod = glm(incidentMDD ~ 1 + offset(l_hat.int), inc.adj, family = binomial(link = "logit"))
+
+summary(mod)
+```
+
+### Plot adjusted intercept predictions (incident MDD)
+
+New intercept =  -5.7896 
+Add the new intercept to previous offset l_hat
+
+#### ROC incident MDD
+
+```{r}
+inc.adj$l_hat = summary(mod)[["coefficients"]][1] + inc.adj$l_hat.int
+inc.adj$y_hat.adj = plogis(inc.adj$l_hat)
+
+roc(data = inc.adj, response = incidentMDD, predictor = y_hat.adj,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration incident MDD
+
+```{r}
+prob = inc.adj$y_hat.adj
+resp = as.numeric(inc.adj$incidentMDD) -1
+
+cal = val.prob(p = prob, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+
+### For increase DS
+
+#### ROC increase DS
+
+```{r}
+inc.adj$l_hat = summary(mod)[["coefficients"]][1] + inc.adj$l_hat.int
+inc.adj$y_hat.adj = plogis(inc.adj$l_hat)
+
+roc(data = inc.adj, response = incSeverity, predictor = y_hat.adj,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration increase DS
+
+```{r}
+prob = inc.adj$y_hat.adj
+resp = as.numeric(inc.complete$incSeverity)-1
+
+cal = val.prob(p = prob, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+## Refit model to ABCD data using PMLE
+
+Use median bootstrapped penalty from results of "bootstrap_penalty.R" file.
+
+```{r}
+mod = lrm(incidentMDD ~ sex + white + trauma3 + sch1 + loneliness01 + fights01 + 
+                      run01 + everdrugs + care1q + care2q + conflictq + 
+                      sex*white +
+                      sex*sch1 + sex*everdrugs + sex*loneliness01 + sex*fights01 +
+                      sex*run01 + sex*trauma3 + sex*care1q + sex*care2q + sex*conflictq,
+          data = inc.complete, linear.predictors = T, maxit=1000, x=T, y=T, penalty = 4.955)
+
+modcoefs = mod[["coefficients"]]
+lower = mod[["coefficients"]] - 1.96*sqrt(diag(mod$var))
+upper = mod[["coefficients"]] + 1.96*sqrt(diag(mod$var))
+
+newcoefs = cbind(modcoefs, lower, upper)
+```
+
+```{r}
+kbl(newcoefs) %>% kable_styling()
+
+#write.csv(newcoefs, "rms_coefs.csv")
+```
+
+#### ROC incident MDD
+
+```{r}
+pred = plogis(as.numeric(mod[["linear.predictors"]]))
+resp = as.numeric(mod[["y"]])-1
+
+roc(response = resp, predictor = pred,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration incident MDD
+
+```{r}
+cal = val.prob(p = pred, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+### For increase DS
+
+#### ROC increase DS
+
+```{r}
+pred = plogis(as.numeric(mod[["linear.predictors"]]))
+resp = as.numeric(inc.complete$incSeverity)-1
+
+roc(response = resp, predictor = pred,
+          plot=T,
+          legacy.axes = T, ylab="Sensitivity [True positive rate]", xlab = "1 - Specificity [False positive rate]", print.auc = T, percent = T, ci = T)
+```
+
+#### Calibration increase DS
+
+```{r}
+cal = val.prob(p = pred, y = resp, logit = 'p', legendloc = c(0, 0.95), statloc = F)
+t(cal) %>% kableExtra::kbl() %>% kableExtra::kable_styling()
+```
+
+## Comparing coefficients from IDEA-RS and ABCD
+
+Plot coefficients from original model vs our re-fitted coefficients
+
+```{r, echo=F, warning=F}
+# csv file of predictors and coefficients for each model in long format:
+coefs = read.csv("coefs_pelotas_rms.csv", header=T)
+coefs = coefs[-c(1, 23),]
+levs = coefs$var[1:21]
+coefs$OR = exp(coefs$coef)
+
+ggplot(coefs, aes(x=var, y=coef, fill=factor(model)))+
+  geom_col(stat="identity", position = "dodge", width = 0.6)+
+  scale_fill_manual(values = c("lightgrey", "black"), labels = c("IDEA-RS", "ABCD")) +
+  guides(fill = guide_legend(reverse=T)) +
+  labs(x="Predictor", y="Coefficient", fill="Sample") +
+  theme_bw() + coord_flip()
+
+#ggsave("coef-all.tiff")
+```
+

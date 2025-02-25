@@ -1,0 +1,714 @@
+---
+title: "Preparing ABCD data for IDEA-RS"
+author: "Eileen Xu"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float:
+      collapsed: false
+---
+
+```{r include=F,}
+library(tidyverse)
+library(plyr)
+library(summarytools)
+
+knitr::opts_chunk$set(echo = T, message = F, results = "asis", warning = F)
+```
+
+## Variables from the environmental risk score for adolescent depression developed by [Rocha et al (2021)](https://doi.org/10.1016/j.jaac.2019.12.004) in Pelotas, Brazil.
+
+Corresponding variables from ABCD baseline data (release 4.0)
+
+| Pelotas Variable | ABCD Variable Description | ABCD Field Name |
+|------------------|--------------------|----------------------------------|
+| Sex | Sex | sex |
+| Skin colour | Ethnic group/Race (parent report) | Culture_and_Environment/abcd_meim01 \> meim_ethnic_id |
+| Childhood maltreatment | Traumatic events (parent report) | Mental_Health/abcd_ptsd01 \> total |
+| School failure | School disengagement (youth report) | Culture_and_Environment/srpf01 \> 15 + 17 |
+| Social isolation | Loneliness (parent report) | Mental_Health/abcd_cbcl01 \>cbcl_q12_p |
+| Fights involvement | Gets in many fights (parent report) | Mental_Health/abcd_cbcl01 \> cbcl_q37_p |
+| Ran away from home | Runs away from home (parent report) | Mental_Health/abcd_cbcl01 \> cbcl_q67_p |
+| Drug use (any) | Substance use summary score (youth report) | Substance_Use/abcd_ysu02 \> add all "ever tried" measures |
+| Relationship with mother | Caregiver 1 relationship (youth report) | Culture_and_Environment/crpbi01 \> total crpbi_parent1_y : parent5_y |
+| Relationship with father | Caregiver 2 relationship (youth report) | Culture_and_Environment/crpbi01 \> total crpbi_caregiver12_y : caregiver16_y |
+| Relationship between parents | Family conflict (youth report) | Culture_and_Environment/abcd_fes01 \> total |
+
+### Ethnicity
+
+```{r}
+eth1 = readRDS("G://data/abcd/release4.0/iii.data/Culture_and_Environment/abcd_meim01.rds")
+eth1 = eth1[,c(1,12, 13)]
+eth1 = eth1[grepl("baseline_", eth1$eventname),]
+freq(eth1$meim_ethnic_id_p, style = "rmarkdown", plain.ascii = F, round.digits = 1, display.labels = F)
+
+eth1$white = ifelse(eth1$meim_ethnic_id_p == "White/Caucasian", "white", "nonwhite")
+```
+
+### Traumatic events
+
+```{r}
+trauma1 = readRDS("G://data/abcd/release4.0/iii.data/Mental_Health/abcd_ptsd01.rds")
+trauma1[,6:22] = lapply(trauma1[,6:22], mapvalues, from = c("Yes", "No"), to=c(1, 0))
+trauma1$trauma = rowSums(sapply(trauma1[,6:22], function(x) as.numeric(as.character(x))), na.rm=T)
+trauma1 = trauma1[grepl("baseline_", trauma1$eventname),]
+trauma1 = trauma1[,c(1, 23)]
+hist(trauma1$trauma, breaks = 17, xlim=c(0, 5))
+
+env = merge(eth1, trauma1, by = "src_subject_id", all=T)
+```
+
+### School disengagement
+
+Recoded from 1 = NO!; 2 = no; 3 = yes; 4 = YES! to 0 = no, 1 = yes.
+
+Q15: "usually, school bores me" and 
+Q17: "getting good grades is not so important to me"
+
+```{r}
+school = readRDS("G://data/abcd/release4.0/iii.data/Culture_and_Environment/srpf01.rds")
+school = school[grepl("baseline_", school$visit),]
+school$school_15_y = ifelse(school$school_15_y == 3 | school$school_15_y == 4, 1, 0)
+school$school_17_y = ifelse(school$school_17_y == 3| school$school_17_y == 4, 1, 0)
+school$disengagement = rowSums(school[,16:17], na.rm = T)
+school = school[,c(1, 20)]
+
+env = merge(env, school, by = "src_subject_id", all=T)
+```
+
+### CBCL: loneliness, fights and running from home
+
+```{r}
+cbcl = readRDS("G://data/abcd/release4.0/iii.data/Mental_Health/abcd_cbcl01.rds")
+cbcl = cbcl %>% select("src_subject_id", "cbcl_q12_p", "cbcl_q37_p", "cbcl_q67_p", "eventname")
+names(cbcl)=c("src_subject_id", "loneliness", "fights", "runsaway", "eventname")
+cbcl = cbcl[grepl("baseline_", cbcl$eventname),]
+cbcl$loneliness01 = ifelse(cbcl$loneliness == "Not True", 0, 1)
+cbcl$fights01 = ifelse(cbcl$fights == "Not True", 0 , 1)
+cbcl$run01 = ifelse(cbcl$runsaway == "Not True", 0 , 1)
+cbcl$eventname = NULL
+
+env = merge(env, cbcl, by = "src_subject_id", all = T)
+```
+
+### Substance use
+
+```{r}
+drug = readRDS("G://data/abcd/release4.0/iii.data/Substance_Use/abcd_ysu02.rds")
+subs = read.delim("druglist.txt")
+drug = drug[,c(1, which(colnames(drug) %in% subs$Field.name == T))]
+drug$everdrugs = rowSums(drug[,2:38], na.rm=T)
+drug$everdrugs = ifelse(drug$everdrugs == 0, 0, 1)
+drug = drug[,c(1, 39)]
+
+env = merge(env, drug, by = "src_subject_id", all = T)
+```
+
+### Relationship with caregivers (low score = bad)
+
+```{r}
+caregivers = readRDS("G://data/abcd/release4.0/iii.data/Culture_and_Environment/crpbi01.rds")
+caregivers = caregivers[grepl("baseline_", caregivers$eventname),]
+caregivers$care1 = rowSums(caregivers[, 5:9], na.rm=T)
+caregivers$care2 = ifelse(caregivers$crpbi_caregiver1_y==1, rowSums(caregivers[, 12:16], na.rm=T), NA)
+caregivers = caregivers[, c(1, 20, 21)]
+hist(caregivers$care1)
+hist(caregivers$care2)
+
+env = merge(env, caregivers, by = "src_subject_id", all = T)
+```
+
+### Family conflict (low score = good)
+
+```{r}
+fam = readRDS("G://data/abcd/release4.0/iii.data/Culture_and_Environment/abcd_fes01.rds")
+fam = fam[grepl("baseline_", fam$eventname),]
+fam$conflict = rowSums(fam[,5:13], na.rm=T)
+fam = fam[,c(1, 16)]
+
+env = merge(env, fam, by = "src_subject_id", all = T)
+```
+
+### Separate caregiver relationships and conflict into quintiles
+
+```{r}
+# care 1 and care 2 are coded so that 1 = best, 5 = poorest
+env$care1q = factor(ntile(x = env$care1, 5))
+env$care1q = mapvalues(env$ care1q, from = c(1, 2, 3, 4, 5), 
+                       to = c("poorest", "poor", "good","very good", "best"))
+env$care2q = factor(ntile(x=env$care2, 5))
+env$care2q = mapvalues(env$care2q, from = c(1, 2, 3, 4, 5), 
+                       to = c("poorest", "poor", "good", "very good", "best"))
+
+env$conflictq = as.factor(ntile(x=env$conflict, 5))
+env$conflictq = mapvalues(env$conflictq, from = c(1, 2, 3, 4, 5),
+                          to = c("least conflict", "little conflict", 
+                                 "moderate conflict", "much conflict",
+                                 "most conflict"))
+
+env$trauma3 = as.factor(ifelse(env$trauma == 0, "none", ifelse(env$trauma == 1, "one", "multiple")))
+env$sch1 = as.factor(ifelse(env$disengagement == 2, 1, 0))
+```
+
+## Manually coding MDD status and creating depression symptoms 
+
+File to generate the following measures of depression: \* DSM-V diagnoses of Major Depressive Disorder, including impairment due to depression. \* Current depressive symptoms, mild/moderate/severe. Based on DSM-V symptoms and field names described in [Shen et. al. (2021)](https://doi.org/10.1016/j.eclinm.2021.101204)
+
+The process was the same for parent-reported MDD, I've just included the youth-report here. I originally had these in separate scripts, but this is where the age and sex variables were extracted too.
+
+### Baseline
+
+Generate DSM-V diagnoses (at least 1 core symptom, at least five total symptoms and impairment) and measures of DS severity: \* 0 = control \* 1 = mild: at least 1 core symptom and \>1 secondary symptoms OR 5-6 total symptoms \* 2 = moderate: at least 1 core symptom and \>2 secondary symptoms OR 7-8 total symptoms \* 3 = severe: both core symptoms and \>3 secondary symptoms OR identified as clinical case and suicidality symptoms present
+
+#### Current symptoms
+
+```{r}
+mdd.y = readRDS("G://data/abcd/release4.0/iii.data/Mental_Health/abcd_ksad501.rds")
+
+mdd.y = data.frame(mdd.y[,1:6], mdd.y[, grepl("ksads_1_|ksads_23_|ksads_22", names(mdd.y))])
+mdd.y = as.data.frame(sapply(mdd.y, gsub, pattern="not administered|not administered due to gating", replacement=NA))
+
+mdd.y.base = mdd.y[grepl("baseline_", mdd.y$eventname),]
+
+#RENAME COLUMNS TO THE CORRESPONDING DEPRESSION SYMPTOM#
+DSlist = read.delim("DSlist.txt", stringsAsFactors = F) #list of ksads field names and corresponding depression symptoms
+
+namelist = c(NULL) #create empty vector to fill new column name
+
+###CURRENT SYMPTOMS###
+for (i in 1:ncol(mdd.y.base)) {
+  old.name = as.character(colnames(mdd.y.base)[i])
+  new.name = if (old.name %in% DSlist$Field.name.current.1) {
+    
+  as.character(DSlist$Description[match(old.name, DSlist$Field.name.current.1)])
+  } else  {old.name}
+  namelist = append(namelist, new.name)
+}
+
+colnames(mdd.y.base) = namelist
+
+#MAKE GROUPED VARIABLE OF WEIGHT/APPETITE CHANGE (EITHER GAIN OR LOSS)
+weightsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    weightloss = mdd.y.base$`Weight Loss`[i]
+    weightgain = mdd.y.base$`Weight Gain`[i]
+    apploss = mdd.y.base$`Decreased Appetite`[i]
+    appgain = mdd.y.base$`Increased Appetite`[i]
+    change = if (is.na(weightloss)==T) {NA}
+    else  if (weightloss == 1 | weightgain == 1 | apploss ==1 | appgain == 1) {1} else {weightloss}
+    weightsymptom = append(weightsymptom, change)
+}
+mdd.y.base$WeightChange = weightsymptom
+#MAKE VARIABLE OF SLEEP DISTURBANCE (EITHER INSOMNIA OR HYPERSOMNIA)
+sleepsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    insomn = mdd.y.base$`Insomnia when depressed`[i]
+    hypersomn = mdd.y.base$Hypersomnia[i]
+    sleepdisturb = if (is.na(insomn)==T | is.na(hypersomn)==T) {NA}
+    else  if (insomn == 1 | hypersomn == 1) {1} else {insomn}
+    sleepsymptom = append(sleepsymptom, sleepdisturb)
+}
+mdd.y.base$SleepDisturb = sleepsymptom
+#MAKE VARIABLE OF PSYCHOMOTOR DISTURBANCE
+psychomotor = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    decrease = mdd.y.base$`Psychomotor Retardation`[i]
+    increase = mdd.y.base$`Psychomotor Agitation in Depressive Disorder`[i]
+    change = if (is.na(decrease)==T | is.na(increase)==T) {NA}
+    else  if (decrease == 1 | increase == 1) {1} else {decrease}
+    psychomotor = append(psychomotor, change)
+}
+mdd.y.base$PsychDisturb = psychomotor
+#MAKE VARIABLE OF WORTHLESSNESS/GUILT
+worthlessness = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    guilt = mdd.y.base$Guilt[i]
+    self = mdd.y.base$`Decreased Self-Esteem`[i]
+    change = if (is.na(guilt)==T | is.na(self)==T) {NA}
+    else  if (guilt == 1 | self == 1) {1} else {guilt}
+    worthlessness = append(worthlessness, change)
+}
+mdd.y.base$Worthlessness = worthlessness
+#MAKE VARIABLE OF CONCENTRATION/INDECISIVENESS  
+concentrate = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    disturb = mdd.y.base$`Concentration Disturbance`[i]
+    indecision = mdd.y.base$Indecision[i]
+    change = if (is.na(disturb)==T | is.na(indecision)==T) {NA}
+    else  if (disturb == 1 | indecision == 1) {1} else {disturb}
+    concentrate = append(concentrate, change)
+}
+mdd.y.base$Concentrate = concentrate
+#MAKE VARIABLE OF DEPRESSED MOOD SYMPTOM: COUNT DEPRESSED MOOD, HOPELESSNESS AND IRRITABILITY AS ONE SYMPTOM
+mood = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    depressed = mdd.y.base$`Depressed Mood`[i]
+    hopeless = mdd.y.base$Hopeless[i]
+    irritable = mdd.y.base$Irritability[i]
+    change = if (is.na(depressed)==T | is.na(hopeless)==T | is.na(irritable)==T) {NA}
+    else  if (depressed == 1 | hopeless == 1 | irritable == 1) {1} else {depressed}
+    mood = append(mood, change)
+}
+mdd.y.base$MoodSymptom = mood
+
+rm(appgain, apploss, change, concentrate, decrease, disturb, guilt, hypersomn, i, increase, indecision, insomn, namelist, new.name, old.name, psychomotor, self, sleepdisturb, sleepsymptom, weightgain, weightloss, weightsymptom, worthlessness,depressed, hopeless, irritable, mood)
+```
+
+```{r}
+#CALCULATE TOTAL SCORES: CORE, SECONDARY AND SUICIDALITY
+CoreSymptoms = "MoodSymptom|Anhedonia"
+listcolsCore = grep(CoreSymptoms, colnames(mdd.y.base))
+Suicidality = "Suicid|Attempt"
+listcolsSui = grep(Suicidality, colnames(mdd.y.base))
+SecSymptoms = "Fatigue|Concentrate|Worthlessness|SleepDisturb|WeightChange|PsychDisturb"
+listcolsSec = grep(SecSymptoms, colnames(mdd.y.base))
+
+mdd.y.base$CoreDSPresent = rowSums(sapply(mdd.y.base[,listcolsCore], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$SuicidalityPresent = rowSums(sapply(mdd.y.base[,listcolsSui], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$SecDSPresent = rowSums(sapply(mdd.y.base[,listcolsSec], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$TotalSymptoms = mdd.y.base$CoreDSPresent + mdd.y.base$SecDSPresent
+
+
+#IDENTIFY CASES BY DSM-V DIAGNOSIS
+mdd.y.base = mutate(mdd.y.base, DiagnosisDSM = ifelse(CoreDSPresent>=1 & TotalSymptoms>=5 & `Impairment in functioning due to depression`== 1 | CoreDSPresent>=1 & TotalSymptoms >=4 & SuicidalityPresent >0 & SuicidalityPresent<10 & `Impairment in functioning due to depression`== 1, 1, 0))
+
+#CODE DEPRESSION SYMPTOMS BASED ON SEVERITY
+mdd.y.base = mutate(mdd.y.base, Severity = ifelse(((CoreDSPresent==2 & SecDSPresent>3)|(SuicidalityPresent>=1))& DiagnosisDSM==1, 3, 
+                                           ifelse((CoreDSPresent>1 & SecDSPresent>2)|(TotalSymptoms>=7 & TotalSymptoms<=8),2,
+                                           ifelse((CoreDSPresent>1 & SecDSPresent>=1)|((TotalSymptoms>=5 & TotalSymptoms<=6)),1,0))))
+
+rm(CoreSymptoms, listcolsCore, listcolsSec, listcolsSui, SecSymptoms, Suicidality)
+```
+
+#### Lifetime symptoms
+
+For lifetime symptoms and diagnoses: rename past symptoms, adding ".P" prefix
+
+```{r}
+###PAST SYMPTOMS###
+namelist = c(NULL)
+
+for (i in 1:ncol(mdd.y.base)) {
+  old.name = as.character(colnames(mdd.y.base)[i])
+  new.name = if (old.name %in% DSlist$Field.name.past.1) {
+  as.character(paste0("P.",DSlist$Description[match(old.name, DSlist$Field.name.past.1)]))
+  } else  {old.name}
+  namelist = append(namelist, new.name)
+}
+
+colnames(mdd.y.base) = namelist
+
+#MAKE GROUPED VARIABLE OF WEIGHT/APPETITE CHANGE (EITHER GAIN OR LOSS)
+weightsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    weightloss = mdd.y.base$`P.Weight Loss`[i]
+    weightgain = mdd.y.base$`P.Weight Gain`[i]
+    apploss = mdd.y.base$`P.Decreased Appetite`[i]
+    appgain = mdd.y.base$`P.Increased Appetite`[i]
+    change = if (is.na(weightloss)==T) {NA}
+    else  if (weightloss == 1 | weightgain == 1 | apploss ==1 | appgain == 1) {1} else {weightloss}
+    weightsymptom = append(weightsymptom, change)
+}
+mdd.y.base$P.WeightChange = weightsymptom
+#MAKE VARIABLE OF SLEEP DISTURBANCE (EITHER INSOMNIA OR HYPERSOMNIA)
+sleepsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    insomn = mdd.y.base$`P.Insomnia when depressed`[i]
+    hypersomn = mdd.y.base$P.Hypersomnia[i]
+    sleepdisturb = if (is.na(insomn)==T | is.na(hypersomn)==T) {NA}
+    else  if (insomn == 1 | hypersomn == 1) {1} else {insomn}
+    sleepsymptom = append(sleepsymptom, sleepdisturb)
+}
+mdd.y.base$P.SleepDisturb = sleepsymptom
+#MAKE VARIABLE OF PSYCHOMOTOR DISTURBANCE
+psychomotor = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    decrease = mdd.y.base$`P.Psychomotor Retardation`[i]
+    increase = mdd.y.base$`P.Psychomotor Agitation in Depressive Disorder`[i]
+    change = if (is.na(decrease)==T | is.na(increase)==T) {NA}
+    else  if (decrease == 1 | increase == 1) {1} else {decrease}
+    psychomotor = append(psychomotor, change)
+}
+mdd.y.base$P.PsychDisturb = psychomotor
+#MAKE VARIABLE OF WORTHLESSNESS/GUILT
+worthlessness = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    guilt = mdd.y.base$P.Guilt[i]
+    self = mdd.y.base$`P.Decreased Self-Esteem`[i]
+    change = if (is.na(guilt)==T | is.na(self)==T) {NA}
+    else  if (guilt == 1 | self == 1) {1} else {guilt}
+    worthlessness = append(worthlessness, change)
+}
+mdd.y.base$P.Worthlessness = worthlessness
+#MAKE VARIABLE OF CONCENTRATION/INDECISIVENESS  
+concentrate = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    disturb = mdd.y.base$`P.Concentration Disturbance`[i]
+    indecision = mdd.y.base$P.Indecision[i]
+    change = if (is.na(disturb)==T | is.na(indecision)==T) {NA}
+    else  if (disturb == 1 | indecision == 1) {1} else {disturb}
+    concentrate = append(concentrate, change)
+}
+mdd.y.base$P.Concentrate = concentrate
+#MAKE VARIABLE OF DEPRESSED MOOD SYMPTOM: COUNT DEPRESSED MOOD, HOPELESSNESS AND IRRITABILITY AS ONE SYMPTOM
+mood = c(NULL)
+for (i in 1:nrow(mdd.y.base)) {
+    depressed = mdd.y.base$`P.Depressed Mood`[i]
+    hopeless = mdd.y.base$P.Hopeless[i]
+    irritable = mdd.y.base$P.Irritability[i]
+    change = if (is.na(depressed)==T | is.na(hopeless)==T | is.na(irritable)==T) {NA}
+    else  if (depressed == 1 | hopeless == 1 | irritable == 1) {1} else {depressed}
+    mood = append(mood, change)
+}
+mdd.y.base$P.MoodSymptom = mood
+
+rm(appgain, apploss, change, concentrate, decrease, disturb, guilt, hypersomn, i, increase, indecision, insomn, namelist, new.name, old.name, psychomotor, self, sleepdisturb, sleepsymptom, weightgain, weightloss, weightsymptom, worthlessness, depressed, hopeless, irritable, mood)
+```
+
+```{r}
+#CALCULATE TOTAL SCORES: CORE, SECONDARY AND SUICIDALITY
+CoreSymptoms = "P.MoodSymptom|P.Anhedonia"
+listcolsCore = grep(CoreSymptoms, colnames(mdd.y.base))
+Suicidality = "P.Suicid|P.Attempt"
+listcolsSui = grep(Suicidality, colnames(mdd.y.base))
+SecSymptoms = "P.Fatigue|P.Concentrate|P.Worthlessness|P.SleepDisturb|P.WeightChange|P.PsychDisturb"
+listcolsSec = grep(SecSymptoms, colnames(mdd.y.base))
+
+
+mdd.y.base$CoreDSPast = rowSums(sapply(mdd.y.base[,listcolsCore], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$SuicidalityPast = rowSums(sapply(mdd.y.base[,listcolsSui], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$SecDSPast = rowSums(sapply(mdd.y.base[,listcolsSec], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.base$TotalSymptomsPast = mdd.y.base$CoreDSPresent + mdd.y.base$SecDSPresent
+
+
+#IDENTIFY CASES BY DSM-V DIAGNOSIS
+mdd.y.base = mutate(mdd.y.base, DiagnosisDSMPast = ifelse(CoreDSPast>=1 & TotalSymptomsPast>=5 & `P.Impairment in functioning due to depression`== 1 | CoreDSPast>=1 & TotalSymptomsPast >=4 & SuicidalityPast >0 & SuicidalityPast<10 & `P.Impairment in functioning due to depression`== 1, 1, 0))
+
+#CODE DEPRESSION SYMPTOMS BASED ON SEVERITY
+mdd.y.base = mutate(mdd.y.base, SeverityPast = ifelse(((CoreDSPast==2 & SecDSPast>3)|(SuicidalityPast>=1))& DiagnosisDSMPast==1, 3, 
+                                           ifelse((CoreDSPast>1 & SecDSPast>2)|(TotalSymptomsPast>=7 & TotalSymptomsPast<=8),2,
+                                           ifelse((CoreDSPast>1 & SecDSPast>=1)|((TotalSymptomsPast>=5 & TotalSymptomsPast<=6)),1,0))))
+
+rm(CoreSymptoms, listcolsCore, listcolsSec, listcolsSui, SecSymptoms, Suicidality)
+
+#COMBINE INTO LIFETIME SCORE
+
+mdd.y.base = mutate(mdd.y.base, DiagnosisDSMLifetime = ifelse(DiagnosisDSM ==1 | DiagnosisDSMPast ==1, 1, 0))
+mdd.y.base = mutate(mdd.y.base, SeverityLifetime = ifelse(Severity == 3 | SeverityPast ==3, 3,
+                                                          ifelse(Severity == 2 | SeverityPast ==2, 2,
+                                                                 ifelse(Severity ==1 | SeverityPast ==1, 1, 0))))
+
+```
+
+```{r}
+#Keep relevant columns only
+mdd.y.base = mdd.y.base %>% select(1:6, 113:118, 125:132)
+#saveRDS(mdd.y.base, "...")
+MDDbase = mdd.y.base[,c(1,3,4,11,12,17:20)]
+colnames(MDDbase) = c("src_subject_id", "age","sex", "MDD_b", "Severity_b", "MDDPast_b", "SeverityPast_b", "MDDLifetime_b", "SeverityLifetime_b")
+```
+
+### Year 2
+
+Repeat the above for youth-reported depression at 2-year follow-up
+
+#### Current symptoms 
+
+```{r}
+mdd.y.2yr = mdd.y[grepl("2_year", mdd.y$eventname),]
+
+#RENAME COLUMNS TO THE CORRESPONDING DEPRESSION SYMPTOM#
+DSlist = read.delim("DSlist.txt", stringsAsFactors = F) #list of ksads field names and corresponding depression symptoms
+
+namelist = c(NULL) #create empty vector to fill new column name
+
+###CURRENT SYMPTOMS###
+for (i in 1:ncol(mdd.y.2yr)) {
+  old.name = as.character(colnames(mdd.y.2yr)[i])
+  new.name = if (old.name %in% DSlist$Field.name.current.1) {
+  as.character(DSlist$Description[match(old.name, DSlist$Field.name.current.1)])
+  } else  {old.name}
+  namelist = append(namelist, new.name)
+}
+
+colnames(mdd.y.2yr) = namelist
+
+#MAKE GROUPED VARIABLE OF WEIGHT/APPETITE CHANGE (EITHER GAIN OR LOSS)
+weightsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    weightloss = mdd.y.2yr$`Weight Loss`[i]
+    weightgain = mdd.y.2yr$`Weight Gain`[i]
+    apploss = mdd.y.2yr$`Decreased Appetite`[i]
+    appgain = mdd.y.2yr$`Increased Appetite`[i]
+    change = if (is.na(weightloss)==T) {NA}
+    else  if (weightloss == 1 | weightgain == 1 | apploss ==1 | appgain == 1) {1} else {weightloss}
+    weightsymptom = append(weightsymptom, change)
+}
+mdd.y.2yr$WeightChange = weightsymptom
+#MAKE VARIABLE OF SLEEP DISTURBANCE (EITHER INSOMNIA OR HYPERSOMNIA)
+sleepsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    insomn = mdd.y.2yr$`Insomnia when depressed`[i]
+    hypersomn = mdd.y.2yr$Hypersomnia[i]
+    sleepdisturb = if (is.na(insomn)==T | is.na(hypersomn)==T) {NA}
+    else  if (insomn == 1 | hypersomn == 1) {1} else {insomn}
+    sleepsymptom = append(sleepsymptom, sleepdisturb)
+}
+mdd.y.2yr$SleepDisturb = sleepsymptom
+#MAKE VARIABLE OF PSYCHOMOTOR DISTURBANCE
+psychomotor = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    decrease = mdd.y.2yr$`Psychomotor Retardation`[i]
+    increase = mdd.y.2yr$`Psychomotor Agitation in Depressive Disorder`[i]
+    change = if (is.na(decrease)==T | is.na(increase)==T) {NA}
+    else  if (decrease == 1 | increase == 1) {1} else {decrease}
+    psychomotor = append(psychomotor, change)
+}
+mdd.y.2yr$PsychDisturb = psychomotor
+#MAKE VARIABLE OF WORTHLESSNESS/GUILT
+worthlessness = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    guilt = mdd.y.2yr$Guilt[i]
+    self = mdd.y.2yr$`Decreased Self-Esteem`[i]
+    change = if (is.na(guilt)==T | is.na(self)==T) {NA}
+    else  if (guilt == 1 | self == 1) {1} else {guilt}
+    worthlessness = append(worthlessness, change)
+}
+mdd.y.2yr$Worthlessness = worthlessness
+#MAKE VARIABLE OF CONCENTRATION/INDECISIVENESS  
+concentrate = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    disturb = mdd.y.2yr$`Concentration Disturbance`[i]
+    indecision = mdd.y.2yr$Indecision[i]
+    change = if (is.na(disturb)==T | is.na(indecision)==T) {NA}
+    else  if (disturb == 1 | indecision == 1) {1} else {disturb}
+    concentrate = append(concentrate, change)
+}
+mdd.y.2yr$Concentrate = concentrate
+#MAKE VARIABLE OF DEPRESSED MOOD SYMPTOM: COUNT DEPRESSED MOOD, HOPELESSNESS AND IRRITABILITY AS ONE SYMPTOM
+mood = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    depressed = mdd.y.2yr$`Depressed Mood`[i]
+    hopeless = mdd.y.2yr$Hopeless[i]
+    irritable = mdd.y.2yr$Irritability[i]
+    change = if (is.na(depressed)==T | is.na(hopeless)==T | is.na(irritable)==T) {NA}
+    else  if (depressed == 1 | hopeless == 1 | irritable == 1) {1} else {depressed}
+    mood = append(mood, change)
+}
+mdd.y.2yr$MoodSymptom = mood
+
+rm(appgain, apploss, change, concentrate, decrease, disturb, guilt, hypersomn, i, increase, indecision, insomn, namelist, new.name, old.name, psychomotor, self, sleepdisturb, sleepsymptom, weightgain, weightloss, weightsymptom, worthlessness, depressed, hopeless, irritable, mood)
+```
+
+```{r}
+#CALCULATE TOTAL SCORES: CORE, SECONDARY AND SUICIDALITY
+CoreSymptoms = "MoodSymptom|Anhedonia"
+listcolsCore = grep(CoreSymptoms, colnames(mdd.y.2yr))
+Suicidality = "Suicid|Attempt"
+listcolsSui = grep(Suicidality, colnames(mdd.y.2yr))
+SecSymptoms = "Fatigue|Concentrate|Worthlessness|SleepDisturb|WeightChange|PsychDisturb"
+listcolsSec = grep(SecSymptoms, colnames(mdd.y.2yr))
+
+
+mdd.y.2yr$CoreDSPresent = rowSums(sapply(mdd.y.2yr[,listcolsCore], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$SuicidalityPresent = rowSums(sapply(mdd.y.2yr[,listcolsSui], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$SecDSPresent = rowSums(sapply(mdd.y.2yr[,listcolsSec], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$TotalSymptoms = mdd.y.2yr$CoreDSPresent + mdd.y.2yr$SecDSPresent
+
+#IDENTIFY CASES BY DSM-V DIAGNOSIS
+mdd.y.2yr = mutate(mdd.y.2yr, DiagnosisDSM = ifelse(CoreDSPresent>=1 & TotalSymptoms>=5 & `Impairment in functioning due to depression`== 1 | CoreDSPresent>=1 & TotalSymptoms >=4 & SuicidalityPresent >0 & SuicidalityPresent<10 & `Impairment in functioning due to depression`== 1, 1, 0))
+
+#CODE DEPRESSION SYMPTOMS BASED ON SEVERITY
+mdd.y.2yr = mutate(mdd.y.2yr, Severity = ifelse(((CoreDSPresent==2 & SecDSPresent>3)|(SuicidalityPresent>=1))& DiagnosisDSM==1, 3, 
+                                           ifelse((CoreDSPresent>1 & SecDSPresent>2)|(TotalSymptoms>=7 & TotalSymptoms<=8),2,
+                                           ifelse((CoreDSPresent>1 & SecDSPresent>=1)|((TotalSymptoms>=5 & TotalSymptoms<=6)),1,0))))
+
+rm(CoreSymptoms, listcolsCore, listcolsSec, listcolsSui, SecSymptoms, Suicidality)
+```
+
+#### Lifetime symptoms
+
+```{r}
+###PAST SYMPTOMS###
+namelist = c(NULL)
+
+for (i in 1:ncol(mdd.y.2yr)) {
+  old.name = as.character(colnames(mdd.y.2yr)[i])
+  new.name = if (old.name %in% DSlist$Field.name.past.1) {
+  as.character(paste0("P.",DSlist$Description[match(old.name, DSlist$Field.name.past.1)]))
+  } else  {old.name}
+  namelist = append(namelist, new.name)
+}
+
+colnames(mdd.y.2yr) = namelist
+
+#MAKE GROUPED VARIABLE OF WEIGHT/APPETITE CHANGE (EITHER GAIN OR LOSS)
+weightsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    weightloss = mdd.y.2yr$`P.Weight Loss`[i]
+    weightgain = mdd.y.2yr$`P.Weight Gain`[i]
+    apploss = mdd.y.2yr$`P.Decreased Appetite`[i]
+    appgain = mdd.y.2yr$`P.Increased Appetite`[i]
+    change = if (is.na(weightloss)==T) {NA}
+    else  if (weightloss == 1 | weightgain == 1 | apploss ==1 | appgain == 1) {1} else {weightloss}
+    weightsymptom = append(weightsymptom, change)
+}
+mdd.y.2yr$P.WeightChange = weightsymptom
+#MAKE VARIABLE OF SLEEP DISTURBANCE (EITHER INSOMNIA OR HYPERSOMNIA)
+sleepsymptom = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    insomn = mdd.y.2yr$`P.Insomnia when depressed`[i]
+    hypersomn = mdd.y.2yr$P.Hypersomnia[i]
+    sleepdisturb = if (is.na(insomn)==T | is.na(hypersomn)==T) {NA}
+    else  if (insomn == 1 | hypersomn == 1) {1} else {insomn}
+    sleepsymptom = append(sleepsymptom, sleepdisturb)
+}
+mdd.y.2yr$P.SleepDisturb = sleepsymptom
+#MAKE VARIABLE OF PSYCHOMOTOR DISTURBANCE
+psychomotor = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    decrease = mdd.y.2yr$`P.Psychomotor Retardation`[i]
+    increase = mdd.y.2yr$`P.Psychomotor Agitation in Depressive Disorder`[i]
+    change = if (is.na(decrease)==T | is.na(increase)==T) {NA}
+    else  if (decrease == 1 | increase == 1) {1} else {decrease}
+    psychomotor = append(psychomotor, change)
+}
+mdd.y.2yr$P.PsychDisturb = psychomotor
+#MAKE VARIABLE OF WORTHLESSNESS/GUILT
+worthlessness = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    guilt = mdd.y.2yr$P.Guilt[i]
+    self = mdd.y.2yr$`P.Decreased Self-Esteem`[i]
+    change = if (is.na(guilt)==T | is.na(self)==T) {NA}
+    else  if (guilt == 1 | self == 1) {1} else {guilt}
+    worthlessness = append(worthlessness, change)
+}
+mdd.y.2yr$P.Worthlessness = worthlessness
+#MAKE VARIABLE OF CONCENTRATION/INDECISIVENESS  
+concentrate = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    disturb = mdd.y.2yr$`P.Concentration Disturbance`[i]
+    indecision = mdd.y.2yr$P.Indecision[i]
+    change = if (is.na(disturb)==T | is.na(indecision)==T) {NA}
+    else  if (disturb == 1 | indecision == 1) {1} else {disturb}
+    concentrate = append(concentrate, change)
+}
+mdd.y.2yr$P.Concentrate = concentrate
+#MAKE VARIABLE OF DEPRESSED MOOD SYMPTOM: COUNT DEPRESSED MOOD, HOPELESSNESS AND IRRITABILITY AS ONE SYMPTOM
+mood = c(NULL)
+for (i in 1:nrow(mdd.y.2yr)) {
+    depressed = mdd.y.2yr$`P.Depressed Mood`[i]
+    hopeless = mdd.y.2yr$P.Hopeless[i]
+    irritable = mdd.y.2yr$P.Irritability[i]
+    change = if (is.na(depressed)==T | is.na(hopeless)==T | is.na(irritable)==T) {NA}
+    else  if (depressed == 1 | hopeless == 1 | irritable == 1) {1} else {depressed}
+    mood = append(mood, change)
+}
+mdd.y.2yr$P.MoodSymptom = mood
+
+rm(appgain, apploss, change, concentrate, decrease, disturb, guilt, hypersomn, i, increase, indecision, insomn, namelist, new.name, old.name, psychomotor, self, sleepdisturb, sleepsymptom, weightgain, weightloss, weightsymptom, worthlessness, depressed, hopeless, irritable, mood)
+```
+
+```{r}
+#CALCULATE TOTAL SCORES: CORE, SECONDARY AND SUICIDALITY
+CoreSymptoms = "P.MoodSymptom|P.Anhedonia"
+listcolsCore = grep(CoreSymptoms, colnames(mdd.y.2yr))
+Suicidality = "P.Suicid|P.Attempt"
+listcolsSui = grep(Suicidality, colnames(mdd.y.2yr))
+SecSymptoms = "P.Fatigue|P.Concentrate|P.Worthlessness|P.SleepDisturb|P.WeightChange|P.PsychDisturb"
+listcolsSec = grep(SecSymptoms, colnames(mdd.y.2yr))
+
+mdd.y.2yr$CoreDSPast = rowSums(sapply(mdd.y.2yr[,listcolsCore], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$SuicidalityPast = rowSums(sapply(mdd.y.2yr[,listcolsSui], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$SecDSPast = rowSums(sapply(mdd.y.2yr[,listcolsSec], function(x) as.numeric(as.character(x))), na.rm=T)
+mdd.y.2yr$TotalSymptomsPast = mdd.y.2yr$CoreDSPresent + mdd.y.2yr$SecDSPresent
+
+
+#IDENTIFY CASES BY DSM-V DIAGNOSIS
+mdd.y.2yr = mutate(mdd.y.2yr, DiagnosisDSMPast = ifelse(CoreDSPast>=1 & TotalSymptomsPast>=5 & `P.Impairment in functioning due to depression`== 1 | CoreDSPast>=1 & TotalSymptomsPast >=4 & SuicidalityPast >0 & SuicidalityPast<10 & `P.Impairment in functioning due to depression`== 1, 1, 0))
+
+#CODE DEPRESSION SYMPTOMS BASED ON SEVERITY
+mdd.y.2yr = mutate(mdd.y.2yr, SeverityPast = ifelse(((CoreDSPast==2 & SecDSPast>3)|(SuicidalityPast>=1))& DiagnosisDSMPast==1, 3, 
+                                           ifelse((CoreDSPast>1 & SecDSPast>2)|(TotalSymptomsPast>=7 & TotalSymptomsPast<=8),2,
+                                           ifelse((CoreDSPast>1 & SecDSPast>=1)|((TotalSymptomsPast>=5 & TotalSymptomsPast<=6)),1,0))))
+
+rm(CoreSymptoms, listcolsCore, listcolsSec, listcolsSui, SecSymptoms, Suicidality)
+
+#COMBINE INTO LIFETIME SCORE
+
+mdd.y.2yr = mutate(mdd.y.2yr, DiagnosisDSMLifetime = ifelse(DiagnosisDSM ==1 | DiagnosisDSMPast ==1, 1, 0))
+mdd.y.2yr = mutate(mdd.y.2yr, SeverityLifetime = ifelse(Severity == 3 | SeverityPast ==3, 3,
+                                                          ifelse(Severity == 2 | SeverityPast ==2, 2,
+                                                                 ifelse(Severity ==1 | SeverityPast ==1, 1, 0))))
+
+```
+
+```{r}
+#Keep relevant columns only
+mdd.y.2yr = mdd.y.2yr %>% select(1:6, 113:118, 125:132)
+#saveRDS(mdd.y.2yr, "...")
+MDD2yr = mdd.y.2yr[,c(1,11,12,17:20)]
+colnames(MDD2yr) = c("src_subject_id", "MDD_2y", "Severity_2y", "MDDPast_2y", "SeverityPast_2y", "MDDLifetime_2y", "SeverityLifetime_2y")
+```
+
+## Merge into final df
+
+``` {r}
+mdd = merge(MDDbase, MDD2yr, by = "src_subject_id", all = T)
+dat = merge(mdd, env, by = "src_subject_id", all=T)
+dat$age = as.numeric(dat$age)
+
+fct_cols = c("sex", "white", "disengagement", "everdrugs", "loneliness01", "fights01", "run01", "care1q", "care2q", "conflictq", "trauma3", "sch1")
+
+dat[,which(colnames(dat) %in% fct_cols)] = lapply(dat[,which(colnames(dat) %in% fct_cols)], function(x) as.factor(x))
+```
+
+### Make cols for incident MDD and change in DS
+
+```{r}
+dat$incidentMDD = ifelse((dat$MDD_2y==1|dat$MDDLifetime_2y==1) & (dat$MDD_b==0 & dat$MDDLifetime_b==0), 1, ifelse(dat$MDD_b==1|dat$MDDLifetime_b==1, NA, 0))
+
+dat$incidentMDD = as.factor(dat$incidentMDD)
+
+dat$SeverityChange = (as.numeric(dat$Severity_2y) + as.numeric(dat$SeverityLifetime_2y)) - (as.numeric(dat$Severity_b) + as.numeric(dat$SeverityLifetime_b))
+
+dat$incSeverity = as.factor(ifelse((dat$SeverityChange > 0)==T, 1, 0))
+```
+
+### Make sure DS are ordered none<mild<mod<severe (0<1<2<3)
+
+```{r}
+DSlevels = c(0,1,2,3)
+
+dat$Severity_b = factor(dat$Severity_b, levels = DSlevels)
+dat$SeverityPast_b = factor(dat$SeverityPast_b, levels = DSlevels)
+dat$SeverityLifetime_b = factor(dat$SeverityLifetime_b, levels = DSlevels)
+dat$Severity_2y = factor(dat$Severity_2y, levels = DSlevels)
+dat$SeverityPast_2y = factor(dat$SeverityPast_2y, levels = DSlevels)
+dat$SeverityLifetime_2y = factor(dat$SeverityLifetime_2y, levels = DSlevels)
+```
+
+### Set reference categories
+
+```{r}
+dat$sex = relevel(dat$sex, ref="M")
+dat$white = relevel(dat$white, ref = "white")
+dat$disengagement = relevel(dat$disengagement, ref = "0")
+dat$everdrugs = relevel(dat$everdrugs, ref = "0")
+dat$loneliness01 = relevel(dat$loneliness01, ref = "0")
+dat$fights01 = relevel(dat$fights01, ref = "0")
+dat$run01 = relevel(dat$run01, ref = "0")
+dat$care1q = relevel(dat$care1q, ref = "best")
+dat$care2q = relevel(dat$care2q, ref = "best")
+dat$conflictq = relevel(dat$conflictq, ref = "least conflict")
+dat$trauma3 = relevel(dat$trauma3, ref = "none")
+dat$sch1 = relevel(dat$sch1, ref = "0")
+```
+
+``` {r results="asis"}
+dfSummary(dat, graph.col = F)
+#saveRDS(dat, "ABCD_ERS_youth.rds")
+```
+
